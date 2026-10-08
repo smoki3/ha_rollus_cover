@@ -196,3 +196,21 @@ number:
       then:
         - lambda: |-
             id(rolladen_4).set_close_duration(static_cast<uint32_t>(x * 1000));
+
+# Programmier-Tasten für Home Assistant (Bereich Diagnose)
+button:
+  - platform: template
+    name: "Schlafzimmer klein Programmieren"
+    id: btn_prog_3
+    entity_category: diagnostic
+    icon: "mdi:cog-sync"
+    on_press:
+      - lambda: rollus.send(0x39, 0xA1);
+
+  - platform: template
+    name: "Schlafzimmer groß Programmieren"
+    id: btn_prog_4
+    entity_category: diagnostic
+    icon: "mdi:cog-sync"
+    on_press:
+      - lambda: rollus.send(0xB9, 0xA1);

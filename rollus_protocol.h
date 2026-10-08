@@ -155,7 +155,7 @@ class RollusProtocol {
       return T;
     }
     // JUMP_DYNAMIC (Standard)
-    if (cmd == 0x81) {
+    if (cmd == 0x81 || cmd == 0xA1) {
       return T;
     } else if (cmd == 0x41) {
       return (T & 0x40) ? T : (T ^ 0x80);
@@ -176,7 +176,7 @@ class RollusProtocol {
       return c;
     }
     // JUMP_DYNAMIC (Standard)
-    if (cmd == 0x81) {
+    if (cmd == 0x81 || cmd == 0xA1) {
       return c;
     } else if (cmd == 0x41) {
       return (c & 0x40) ? c : (c ^ 0x80);
@@ -203,7 +203,11 @@ class RollusProtocol {
     uint8_t b3 = b2 ^ target_remote_id ^ m.b3_parity;
     uint8_t b5 = m.b5;
 
-    uint8_t base_mask = (cmdCode == 0x81) ? m.b7_up : ((cmdCode == 0x21) ? m.b7_down : m.b7_stop);
+    uint8_t base_mask = m.b7_stop;
+    if (cmdCode == 0x81) base_mask = m.b7_up;
+    else if (cmdCode == 0x21) base_mask = m.b7_down;
+    else if (cmdCode == 0xA1) base_mask = m.b7_up ^ 0x64;
+
     uint8_t b7 = base_mask;
     for (int i = 0; i < 8; i++) {
       if ((c >> i) & 1) b7 ^= V[i];
@@ -386,80 +390,101 @@ class RollusProtocol {
     uint8_t b6 = f[6];
     uint8_t b7 = f[7];
 
-    // Gültiges Rollus-Telegramm: Start-Byte b1 ist 0x01 und b2 ist ein bekanntes Kommando (UP=0x81, STOP=0x41, DOWN=0x21)
-    if (b1 == 0x01 && (b2 == 0x81 || b2 == 0x41 || b2 == 0x21)) {
-      uint8_t c = b0 ^ b6;
-      uint8_t remote_cmd = b2;
-      uint8_t remote_id = b4;
-      const char* cmd_str = (remote_cmd == 0x81) ? "HOCH" : ((remote_cmd == 0x21) ? "RUNTER" : "STOP");
+    // DEBUG: Dekodierte Bytes jedes empfangenen 64-Bit-Pakets (zum Deaktivieren einfach auskommentieren)
+    // ESP_LOGI("Rollus", "Dekodierte Bytes: %02X %02X %02X %02X %02X %02X %02X %02X", b0, b1, b2, b3, b4, b5, b6, b7);
 
-      // Pruefen, ob die Fernbedienung bereits registriert und einem Cover zugewiesen ist
-      if (shutters.find(remote_id) != shutters.end() && shutters[remote_id].cover != nullptr) {
-        auto &s = shutters[remote_id];
-        uint8_t new_T = getTFromC(c, remote_cmd, s.masks.jump_type);
-        set_counter(remote_id, new_T);
+    // Rollus-Telegramm (Start-Byte b1 ist 0x01)
+    if (b1 == 0x01) {
+      if (b2 == 0x81 || b2 == 0x41 || b2 == 0x21 || b2 == 0xA1) {
+        uint8_t c = b0 ^ b6;
+        uint8_t remote_cmd = b2;
+        uint8_t remote_id = b4;
+        const char* cmd_str = (remote_cmd == 0x81) ? "HOCH" : ((remote_cmd == 0x21) ? "RUNTER" : ((remote_cmd == 0xA1) ? "PROG" : "STOP"));
 
-        ESP_LOGI("Rollus", ">>> Rolladen 0x%02X: Taste %s (0x%02X) empfangen | T=%u",
-                 remote_id, cmd_str, remote_cmd, new_T);
-        auto *cov = s.cover;
-        if (remote_cmd == 0x81) {
-          cov->current_operation = esphome::cover::COVER_OPERATION_OPENING;
-          cov->position = esphome::cover::COVER_OPEN;
-        } else if (remote_cmd == 0x21) {
-          cov->current_operation = esphome::cover::COVER_OPERATION_CLOSING;
-          cov->position = esphome::cover::COVER_CLOSED;
+        // Pruefen, ob die Fernbedienung bereits registriert und einem Cover zugewiesen ist
+        if (shutters.find(remote_id) != shutters.end() && shutters[remote_id].cover != nullptr) {
+          auto &s = shutters[remote_id];
+          uint8_t new_T = getTFromC(c, remote_cmd, s.masks.jump_type);
+          set_counter(remote_id, new_T);
+
+          // ESP_LOGI("Rollus", ">>> Rolladen 0x%02X: Taste %s (0x%02X) empfangen | T=%u",
+          //          remote_id, cmd_str, remote_cmd, new_T);
+          auto *cov = s.cover;
+          if (remote_cmd == 0x81) {
+            cov->current_operation = esphome::cover::COVER_OPERATION_OPENING;
+            cov->position = esphome::cover::COVER_OPEN;
+            cov->publish_state();
+          } else if (remote_cmd == 0x21) {
+            cov->current_operation = esphome::cover::COVER_OPERATION_CLOSING;
+            cov->position = esphome::cover::COVER_CLOSED;
+            cov->publish_state();
+          } else if (remote_cmd == 0x41) {
+            cov->current_operation = esphome::cover::COVER_OPERATION_IDLE;
+            cov->publish_state();
+          } else {
+            ESP_LOGI("Rollus", ">>> Rolladen 0x%02X: Programmieren (0xA1) empfangen | T=%u", remote_id, new_T);
+          }
         } else {
-          cov->current_operation = esphome::cover::COVER_OPERATION_IDLE;
+          // Unbekannte Fernbedienung: Masken direkt aus den Empfangsdaten ableiten
+          RollusJumpType jump_type = (b5 == 0x6E) ? JUMP_XOR : JUMP_DYNAMIC;
+          uint8_t new_T = getTFromC(c, remote_cmd, jump_type);
+
+          uint8_t mask_b6_b7 = b6 ^ b7;
+          uint8_t b3_par = b2 ^ b4 ^ b3;
+
+          // Basis aus B4 Polynom berechnen
+          uint8_t b4_p = 0;
+          for (int i = 0; i < 8; i++) {
+            if ((b4 >> i) & 1) b4_p ^= V_B4[i];
+          }
+
+          uint8_t b7_u = 0, b7_s = 0, b7_d = 0;
+          if (b5 == 0x6E) {
+            b7_u = b4_p ^ 0x0E;
+            b7_s = b7_u ^ 0x5F;
+            b7_d = b7_u ^ 0xF3;
+          } else {
+            b7_s = b4_p ^ 0x15;
+            b7_u = b7_s ^ 0x5F;
+            b7_d = b7_s ^ 0xAC;
+          }
+
+          RollusMasks detected_masks(b5, mask_b6_b7, b3_par, b7_u, b7_s, b7_d, jump_type);
+          if (shutters.find(remote_id) == shutters.end()) {
+            register_shutter(remote_id, nullptr, detected_masks);
+          }
+          set_counter(remote_id, new_T);
+
+          static uint32_t last_unknown_ms = 0;
+          static uint8_t last_unknown_id = 0;
+          static uint8_t last_unknown_t = 0;
+          uint32_t now = millis();
+          if (remote_id != last_unknown_id || new_T != last_unknown_t || (now - last_unknown_ms > 1500)) {
+            last_unknown_ms = now;
+            last_unknown_id = remote_id;
+            last_unknown_t = new_T;
+
+            ESP_LOGW("Rollus", "Unbekannte FB -> ID: 0x%02X | Taste: %s | T: %u",
+                     remote_id, cmd_str, new_T);
+            ESP_LOGW("Rollus", ">>> In rollus.yaml unter on_boot einfuegen:");
+            ESP_LOGW("Rollus", "    rollus.register_shutter(0x%02X, id(rolladen_X), {0x%02X, 0x%02X, 0x%02X, 0x%02X, 0x%02X, 0x%02X, %s});",
+                     remote_id, b5, mask_b6_b7, b3_par, b7_u, b7_s, b7_d,
+                     (jump_type == JUMP_XOR) ? "JUMP_XOR" : "JUMP_DYNAMIC");
+          }
         }
-        cov->publish_state();
       } else {
-        // Unbekannte Fernbedienung: Masken direkt aus den Empfangsdaten ableiten
-        RollusJumpType jump_type = (b5 == 0x6E) ? JUMP_XOR : JUMP_DYNAMIC;
-        uint8_t new_T = getTFromC(c, remote_cmd, jump_type);
-
-        uint8_t mask_b6_b7 = b6 ^ b7;
-        uint8_t b3_par = b2 ^ b4 ^ b3;
-
-        // Basis aus B4 Polynom berechnen
-        uint8_t b4_p = 0;
-        for (int i = 0; i < 8; i++) {
-          if ((b4 >> i) & 1) b4_p ^= V_B4[i];
-        }
-
-        uint8_t b7_u = 0, b7_s = 0, b7_d = 0;
-        if (b5 == 0x6E) {
-          b7_u = b4_p ^ 0x0E;
-          b7_s = b7_u ^ 0x5F;
-          b7_d = b7_u ^ 0xF3;
-        } else {
-          b7_s = b4_p ^ 0x15;
-          b7_u = b7_s ^ 0x5F;
-          b7_d = b7_s ^ 0xAC;
-        }
-
-        RollusMasks detected_masks(b5, mask_b6_b7, b3_par, b7_u, b7_s, b7_d, jump_type);
-        if (shutters.find(remote_id) == shutters.end()) {
-          register_shutter(remote_id, nullptr, detected_masks);
-        }
-        set_counter(remote_id, new_T);
-
-        static uint32_t last_unknown_ms = 0;
-        static uint8_t last_unknown_id = 0;
-        static uint8_t last_unknown_t = 0;
+        // Sonder-Signal (z.B. Programmier-/Pairing-Taste P2)
+        static uint32_t last_special_ms = 0;
+        static uint8_t last_special_cmd = 0;
         uint32_t now = millis();
-        if (remote_id != last_unknown_id || new_T != last_unknown_t || (now - last_unknown_ms > 1500)) {
-          last_unknown_ms = now;
-          last_unknown_id = remote_id;
-          last_unknown_t = new_T;
-
-          ESP_LOGW("Rollus", "Unbekannte FB -> ID: 0x%02X | Taste: %s | T: %u",
-                   remote_id, cmd_str, new_T);
-          ESP_LOGW("Rollus", ">>> In rollus.yaml unter on_boot einfuegen:");
-          ESP_LOGW("Rollus", "    rollus.register_shutter(0x%02X, id(rolladen_X), {0x%02X, 0x%02X, 0x%02X, 0x%02X, 0x%02X, 0x%02X, %s});",
-                   remote_id, b5, mask_b6_b7, b3_par, b7_u, b7_s, b7_d,
-                   (jump_type == JUMP_XOR) ? "JUMP_XOR" : "JUMP_DYNAMIC");
+        if (b2 != last_special_cmd || (now - last_special_ms > 1000)) {
+          last_special_ms = now;
+          last_special_cmd = b2;
+          ESP_LOGW("Rollus", "Sonder-Signal / Taste 0x%02X -> ID: 0x%02X | Bytes: %02X %02X %02X %02X %02X %02X %02X %02X",
+                   b2, b4, b0, b1, b2, b3, b4, b5, b6, b7);
         }
       }
+
       // Verwerfe verarbeitete Pulse bis hinter dieses Frame
       rx_stream.erase(rx_stream.begin(), rx_stream.begin() + std::min(last_p_idx + 1, rx_stream.size()));
       // g auf -1 setzen, damit nach dem Schleifeninkrement (g++) wieder bei Index 0 begonnen wird
