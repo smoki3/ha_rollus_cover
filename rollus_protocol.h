@@ -5,6 +5,7 @@
 #include <nvs.h>
 #include <vector>
 #include <map>
+#include <deque>
 #include <cmath>
 #include <functional>
 
@@ -42,9 +43,18 @@ struct RollusShutter {
   RollusMasks masks;
 };
 
-class RollusProtocol {
+struct RollusTxItem {
+  uint8_t target_id;
+  uint8_t cmdCode;
+};
+
+class RollusProtocol : public esphome::Component {
  private:
   std::map<uint8_t, RollusShutter> shutters;
+  std::deque<RollusTxItem> tx_queue;
+  uint32_t last_tx_time = 0;
+  uint32_t tx_cooldown_ms = 250;
+  bool is_registered_ = false;
 
   const uint8_t V_B4[8] = {0x16, 0x2C, 0x58, 0xB0, 0x67, 0xCE, 0x9B, 0x31};
   const uint8_t V[8]    = {0x06, 0x0C, 0x18, 0x30, 0x60, 0xC0, 0x87, 0x09};
@@ -58,16 +68,41 @@ class RollusProtocol {
  public:
   void set_transmitter_fn(std::function<void(const std::vector<int32_t>&)> fn) {
     this->transmit_func = fn;
+    if (!this->is_registered_) {
+      esphome::App.register_component(this);
+      this->is_registered_ = true;
+    }
   }
 
-  // Sendet einen Rollus-Befehl fuer eine bestimmte ID
-  void send(uint8_t target_id, uint8_t cmdCode) {
+  void set_tx_cooldown(uint32_t ms) {
+    this->tx_cooldown_ms = ms;
+  }
+
+  void notify_tx() {
+    this->last_tx_time = millis();
+  }
+
+  // Sofortiges Senden ohne Warteschlange
+  void send_immediate(uint8_t target_id, uint8_t cmdCode) {
     if (!this->transmit_func) {
       ESP_LOGE("Rollus", "Transmitter nicht gesetzt! Bitte 'rollus.set_transmitter_fn(...);' in on_boot aufrufen.");
       return;
     }
     auto pulses = this->buildPulseVector(target_id, cmdCode);
     this->transmit_func(pulses);
+    this->last_tx_time = millis();
+  }
+
+  // Reiht einen Rollus-Befehl in die Sende-Warteschlange (Queue) ein
+  void send(uint8_t target_id, uint8_t cmdCode) {
+    if (this->tx_queue.size() >= 16) {
+      ESP_LOGW("Rollus", "TX-Queue voll (16 Einträge)! Befehl 0x%02X für ID 0x%02X verworfen.",
+               cmdCode, target_id);
+      return;
+    }
+    this->tx_queue.push_back({target_id, cmdCode});
+    ESP_LOGD("Rollus", "TX-Queue: Befehl 0x%02X fuer ID 0x%02X eingereiht (Warteschlange: %u)",
+             cmdCode, target_id, (unsigned)this->tx_queue.size());
   }
 
   void send(uint8_t cmdCode) {
@@ -76,6 +111,21 @@ class RollusProtocol {
       return;
     }
     send(shutters.begin()->first, cmdCode);
+  }
+
+  // Abarbeiten der Sende-Warteschlange in der ESPHome Hauptschleife
+  void loop() override {
+    if (this->tx_queue.empty()) return;
+
+    uint32_t now = millis();
+    if (now - this->last_tx_time < this->tx_cooldown_ms) {
+      return; // Mindestabstand zwischen Funkaussendungen einhalten
+    }
+
+    auto item = this->tx_queue.front();
+    this->tx_queue.pop_front();
+
+    send_immediate(item.target_id, item.cmdCode);
   }
 
   // Registrierung mit individuellen Masken

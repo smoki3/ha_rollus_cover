@@ -70,6 +70,7 @@ remote_transmitter:
   on_complete:
     then:
       - cc1101.begin_rx
+      - lambda: rollus.notify_tx();
 
 # Empfänger über GDO2 (Pin 22) - Erkennt und synchronisiert automatisch alle registrierten Fernbedienungen
 remote_receiver:
