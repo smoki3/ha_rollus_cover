@@ -48,13 +48,12 @@ struct RollusTxItem {
   uint8_t cmdCode;
 };
 
-class RollusProtocol : public esphome::Component {
+class RollusProtocol {
  private:
   std::map<uint8_t, RollusShutter> shutters;
   std::deque<RollusTxItem> tx_queue;
   uint32_t last_tx_time = 0;
   uint32_t tx_cooldown_ms = 250;
-  bool is_registered_ = false;
 
   const uint8_t V_B4[8] = {0x16, 0x2C, 0x58, 0xB0, 0x67, 0xCE, 0x9B, 0x31};
   const uint8_t V[8]    = {0x06, 0x0C, 0x18, 0x30, 0x60, 0xC0, 0x87, 0x09};
@@ -68,10 +67,6 @@ class RollusProtocol : public esphome::Component {
  public:
   void set_transmitter_fn(std::function<void(const std::vector<int32_t>&)> fn) {
     this->transmit_func = fn;
-    if (!this->is_registered_) {
-      esphome::App.register_component_(this);
-      this->is_registered_ = true;
-    }
   }
 
   void set_tx_cooldown(uint32_t ms) {
@@ -113,8 +108,8 @@ class RollusProtocol : public esphome::Component {
     send(shutters.begin()->first, cmdCode);
   }
 
-  // Abarbeiten der Sende-Warteschlange in der ESPHome Hauptschleife
-  void loop() override {
+  // Abarbeiten der Sende-Warteschlange (wird über on_loop in rollus.yaml aufgerufen)
+  void loop() {
     if (this->tx_queue.empty()) return;
 
     uint32_t now = millis();

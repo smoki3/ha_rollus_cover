@@ -3,6 +3,9 @@ esphome:
   friendly_name: Rollus
   includes:
     - rollus_protocol.h
+  on_loop:
+    then:
+      - lambda: rollus.loop();
   on_boot:
     - priority: 600
       then:
