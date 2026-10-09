@@ -15,23 +15,24 @@
 #define ROLLUS_PREAMBLE_PAIRS 35
 #define ROLLUS_REPEAT_COUNT   3
 
-enum RollusJumpType : uint8_t {
-  JUMP_DYNAMIC = 0, // Bit-Invertierung bei STOP/RUNTER (Standard)
-  JUMP_XOR = 1      // Feste XOR-Offsets (STOP: 0xC0, RUNTER: 0xA0)
-};
-
 struct RollusMasks {
-  uint8_t b5 = 0xD8;
-  uint8_t mask_b6_b7 = 0xC4;
-  uint8_t b3_parity = 0x1D;
-  uint8_t b7_up = 0x7A;
-  uint8_t b7_stop = 0x25;
-  uint8_t b7_down = 0x89;
-  RollusJumpType jump_type = JUMP_DYNAMIC;
+  uint8_t b5 = 0x6E;
+  uint8_t b7_offset = 0x51;
 
   RollusMasks() = default;
-  RollusMasks(uint8_t b5_, uint8_t m_b6_b7_, uint8_t b3_par_, uint8_t b7_u_, uint8_t b7_s_, uint8_t b7_d_, RollusJumpType jt_ = JUMP_DYNAMIC)
-      : b5(b5_), mask_b6_b7(m_b6_b7_), b3_parity(b3_par_), b7_up(b7_u_), b7_stop(b7_s_), b7_down(b7_d_), jump_type(jt_) {}
+  RollusMasks(uint8_t b5_, uint8_t b7_off_)
+      : b5(b5_), b7_offset(b7_off_) {}
+
+  // mask_b6_b7 errechnet sich aus ID (b4) und b5 mit V_B4[7] (0x31)
+  uint8_t getMaskB6B7(uint8_t target_id) const {
+    uint8_t b4_base = target_id & 0x7F;
+    return static_cast<uint8_t>(((b4_base ^ b5 ^ 0x31) & 0x7F) | 0x80);
+  }
+
+  // b3_parity ist mathematisch immer b5 ^ mask_b6_b7 ^ 0x01
+  uint8_t getB3Parity(uint8_t target_id) const {
+    return static_cast<uint8_t>(b5 ^ getMaskB6B7(target_id) ^ 0x01);
+  }
 };
 
 struct RollusShutter {
@@ -77,12 +78,7 @@ class RollusProtocol {
     send(shutters.begin()->first, cmdCode);
   }
 
-  // Abwaertskompatibilitaet: Falls rollus.init(id) noch in der YAML steht
-  void init(uint8_t id) {
-    register_shutter(id);
-  }
-
-  // Universal-Registrierung mit individuellen Masken (Variante A)
+  // Registrierung mit individuellen Masken
   void register_shutter(uint8_t id, esphome::cover::Cover *cover, const RollusMasks &masks) {
     RollusShutter s;
     s.id = id;
@@ -107,14 +103,9 @@ class RollusProtocol {
              id, s.current_T, s.current_T);
   }
 
-  // Überladung falls Masken nicht angegeben werden
+  // Überladung falls Masken nicht angegeben werden (nutzt Standard-Masken)
   void register_shutter(uint8_t id, esphome::cover::Cover *cover = nullptr) {
     register_shutter(id, cover, RollusMasks());
-  }
-
-  // Abwärtskompatibilität
-  void register_shutter_custom(uint8_t id, esphome::cover::Cover *cover, const RollusMasks &m) {
-    register_shutter(id, cover, m);
   }
 
   uint8_t get_counter(uint8_t id) {
@@ -147,46 +138,30 @@ class RollusProtocol {
     }
   }
 
-  // T -> c (taster-spezifische Spruenge basierend auf jump_type)
-  uint8_t getCFromT(uint8_t T, uint8_t cmd, RollusJumpType jump_type) {
-    if (jump_type == JUMP_XOR) {
-      if (cmd == 0x41) return T ^ 0xC0;
-      if (cmd == 0x21) return T ^ 0xA0;
-      return T;
-    }
-    // JUMP_DYNAMIC (Standard)
-    if (cmd == 0x81 || cmd == 0xA1) {
-      return T;
-    } else if (cmd == 0x41) {
-      return (T & 0x40) ? T : (T ^ 0x80);
-    } else if (cmd == 0x21) {
-      if (T & 0x20) {
-        return (T & 0x40) ? (T ^ 0xC0) : (T ^ 0x40);
-      }
-      return T;
-    }
+  // T -> c (taster-spezifische Sprünge mit festen XOR-Offsets: STOP ^ 0xC0, RUNTER ^ 0xA0)
+  uint8_t getCFromT(uint8_t T, uint8_t cmd) {
+    if (cmd == 0x41) return T ^ 0xC0;
+    if (cmd == 0x21) return T ^ 0xA0;
     return T;
   }
 
-  // c -> T (Umkehrfunktion)
-  uint8_t getTFromC(uint8_t c, uint8_t cmd, RollusJumpType jump_type) {
-    if (jump_type == JUMP_XOR) {
-      if (cmd == 0x41) return c ^ 0xC0;
-      if (cmd == 0x21) return c ^ 0xA0;
-      return c;
-    }
-    // JUMP_DYNAMIC (Standard)
-    if (cmd == 0x81 || cmd == 0xA1) {
-      return c;
-    } else if (cmd == 0x41) {
-      return (c & 0x40) ? c : (c ^ 0x80);
-    } else if (cmd == 0x21) {
-      if (c & 0x20) {
-        return (c & 0x40) ? (c ^ 0x40) : (c ^ 0xC0);
-      }
-      return c;
-    }
+  // c -> T (Umkehrfunktion, bei XOR identisch)
+  uint8_t getTFromC(uint8_t c, uint8_t cmd) {
+    if (cmd == 0x41) return c ^ 0xC0;
+    if (cmd == 0x21) return c ^ 0xA0;
     return c;
+  }
+
+  // Berechnet die b7-Tastenmasken (UP, STOP, DOWN) universell aus ID und b7_offset (ohne b5-Abhängigkeit)
+  void getB7Masks(uint8_t target_id, uint8_t b7_offset, uint8_t &b7_u, uint8_t &b7_s, uint8_t &b7_d) {
+    uint8_t b4_p = 0;
+    for (int i = 0; i < 8; i++) {
+      if ((target_id >> i) & 1) b4_p ^= V_B4[i];
+    }
+
+    b7_s = b4_p ^ b7_offset;
+    b7_u = b7_s ^ 0x5F;
+    b7_d = b7_s ^ 0xAC;
   }
 
   void calculateFrame(uint8_t target_remote_id, uint8_t T, uint8_t cmdCode, uint8_t* rawFrame, uint8_t* decodedFrame) {
@@ -198,22 +173,25 @@ class RollusProtocol {
       m = shutters[target_remote_id].masks;
     }
 
-    uint8_t c = getCFromT(T, cmdCode, m.jump_type);
+    uint8_t c = getCFromT(T, cmdCode);
     uint8_t b2 = cmdCode;
-    uint8_t b3 = b2 ^ target_remote_id ^ m.b3_parity;
+    uint8_t b3 = b2 ^ target_remote_id ^ m.getB3Parity(target_remote_id);
     uint8_t b5 = m.b5;
 
-    uint8_t base_mask = m.b7_stop;
-    if (cmdCode == 0x81) base_mask = m.b7_up;
-    else if (cmdCode == 0x21) base_mask = m.b7_down;
-    else if (cmdCode == 0xA1) base_mask = m.b7_up ^ 0x64;
+    uint8_t b7_u = 0, b7_s = 0, b7_d = 0;
+    getB7Masks(target_remote_id, m.b7_offset, b7_u, b7_s, b7_d);
+
+    uint8_t base_mask = b7_s;
+    if (cmdCode == 0x81) base_mask = b7_u;
+    else if (cmdCode == 0x21) base_mask = b7_d;
+    else if (cmdCode == 0xA1) base_mask = b7_u ^ 0x64;
 
     uint8_t b7 = base_mask;
     for (int i = 0; i < 8; i++) {
       if ((c >> i) & 1) b7 ^= V[i];
     }
 
-    uint8_t b6 = b7 ^ m.mask_b6_b7;
+    uint8_t b6 = b7 ^ m.getMaskB6B7(target_remote_id);
     uint8_t b0 = b6 ^ c;
     uint8_t b1 = 0x01;
     uint8_t b4 = target_remote_id;
@@ -404,7 +382,7 @@ class RollusProtocol {
         // Pruefen, ob die Fernbedienung bereits registriert und einem Cover zugewiesen ist
         if (shutters.find(remote_id) != shutters.end() && shutters[remote_id].cover != nullptr) {
           auto &s = shutters[remote_id];
-          uint8_t new_T = getTFromC(c, remote_cmd, s.masks.jump_type);
+          uint8_t new_T = getTFromC(c, remote_cmd);
           set_counter(remote_id, new_T);
 
           // ESP_LOGI("Rollus", ">>> Rolladen 0x%02X: Taste %s (0x%02X) empfangen | T=%u",
@@ -426,30 +404,26 @@ class RollusProtocol {
           }
         } else {
           // Unbekannte Fernbedienung: Masken direkt aus den Empfangsdaten ableiten
-          RollusJumpType jump_type = (b5 == 0x6E) ? JUMP_XOR : JUMP_DYNAMIC;
-          uint8_t new_T = getTFromC(c, remote_cmd, jump_type);
+          uint8_t new_T = getTFromC(c, remote_cmd);
 
-          uint8_t mask_b6_b7 = b6 ^ b7;
-          uint8_t b3_par = b2 ^ b4 ^ b3;
+          // b7_offset universell rekonstruieren
+          uint8_t c_v = 0;
+          for (int i = 0; i < 8; i++) {
+            if ((c >> i) & 1) c_v ^= V[i];
+          }
+          uint8_t base_mask = b7 ^ c_v;
+          uint8_t base_stop = base_mask;
+          if (remote_cmd == 0x81) base_stop = base_mask ^ 0x5F;
+          else if (remote_cmd == 0x21) base_stop = base_mask ^ 0xAC;
+          else if (remote_cmd == 0xA1) base_stop = base_mask ^ 0x3B;
 
-          // Basis aus B4 Polynom berechnen
           uint8_t b4_p = 0;
           for (int i = 0; i < 8; i++) {
-            if ((b4 >> i) & 1) b4_p ^= V_B4[i];
+            if ((remote_id >> i) & 1) b4_p ^= V_B4[i];
           }
+          uint8_t b7_offset = base_stop ^ b4_p;
 
-          uint8_t b7_u = 0, b7_s = 0, b7_d = 0;
-          if (b5 == 0x6E) {
-            b7_u = b4_p ^ 0x0E;
-            b7_s = b7_u ^ 0x5F;
-            b7_d = b7_u ^ 0xF3;
-          } else {
-            b7_s = b4_p ^ 0x15;
-            b7_u = b7_s ^ 0x5F;
-            b7_d = b7_s ^ 0xAC;
-          }
-
-          RollusMasks detected_masks(b5, mask_b6_b7, b3_par, b7_u, b7_s, b7_d, jump_type);
+          RollusMasks detected_masks(b5, b7_offset);
           if (shutters.find(remote_id) == shutters.end()) {
             register_shutter(remote_id, nullptr, detected_masks);
           }
@@ -467,9 +441,8 @@ class RollusProtocol {
             ESP_LOGW("Rollus", "Unbekannte FB -> ID: 0x%02X | Taste: %s | T: %u",
                      remote_id, cmd_str, new_T);
             ESP_LOGW("Rollus", ">>> In rollus.yaml unter on_boot einfuegen:");
-            ESP_LOGW("Rollus", "    rollus.register_shutter(0x%02X, id(rolladen_X), {0x%02X, 0x%02X, 0x%02X, 0x%02X, 0x%02X, 0x%02X, %s});",
-                     remote_id, b5, mask_b6_b7, b3_par, b7_u, b7_s, b7_d,
-                     (jump_type == JUMP_XOR) ? "JUMP_XOR" : "JUMP_DYNAMIC");
+            ESP_LOGW("Rollus", "    rollus.register_shutter(0x%02X, id(rolladen_X), {0x%02X, 0x%02X});",
+                     remote_id, b5, b7_offset);
           }
         }
       } else {

@@ -74,7 +74,7 @@ This project enables complete local control via Home Assistant: it emulates orig
 In `rollus.yaml`, add your shutters under `on_boot` using the compact 1-line registration syntax:
 
 ```yaml
-# Syntax: rollus.register_shutter(ID, id(cover_entity), {b5, mask_b6_b7, b3_parity, b7_up, b7_stop, b7_down, jump_mode});
+# Syntax: rollus.register_shutter(ID, id(cover_entity), {b5, b7_offset});
 on_boot:
   - priority: 600
     then:
@@ -86,9 +86,9 @@ on_boot:
           });
 
           // Examples:
-          rollus.register_shutter(0x2D, id(rolladen_1), {0xD8, 0xC4, 0x1D, 0x7A, 0x25, 0x89, JUMP_DYNAMIC});
-          rollus.register_shutter(0x39, id(rolladen_3), {0x6E, 0xE6, 0x89, 0x01, 0x5E, 0xF2, JUMP_XOR});
-          rollus.register_shutter(0xB9, id(rolladen_4), {0x6E, 0xE6, 0x89, 0x30, 0x6F, 0xC3, JUMP_XOR});
+          rollus.register_shutter(0x2D, id(rolladen_1), {0xD8, 0x15});
+          rollus.register_shutter(0x39, id(rolladen_3), {0x6E, 0x51});
+          rollus.register_shutter(0xB9, id(rolladen_4), {0x6E, 0x51});
 ```
 
 ### 2. Discovering a New / Unknown Remote
@@ -100,7 +100,7 @@ on_boot:
 ```text
 [W][Rollus]: Unbekannte FB -> ID: 0x39 | Taste: HOCH | T: 227
 [W][Rollus]: >>> In rollus.yaml unter on_boot einfuegen:
-[W][Rollus]:     rollus.register_shutter(0x39, id(rolladen_X), {0x6E, 0xE6, 0x89, 0x01, 0x5E, 0xF2, JUMP_XOR});
+[W][Rollus]:     rollus.register_shutter(0x39, id(rolladen_X), {0x6E, 0x51});
 ```
 
 4. Copy the line into your `rollus.yaml`, define your `time_based` cover entity, and you are ready to go!

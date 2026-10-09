@@ -12,12 +12,12 @@ esphome:
               call.get_data()->set_data(pulses);
               call.perform();
             });
-            // Registrierung der Rolläden mit individuellen Masken (Variante A):
-            // Parameter: ID, Cover, {b5, b6^b7, b3_parity, b7_up, b7_stop, b7_down, jump_mode}
-            // rollus.register_shutter(0x2D, id(rolladen_1), {0xD8, 0xC4, 0x1D, 0x7A, 0x25, 0x89, JUMP_XOR});
-            // rollus.register_shutter(0xAD, id(rolladen_2), {0xD8, 0xC4, 0x1D, 0x4B, 0x14, 0xB8, JUMP_XOR});
-            rollus.register_shutter(0x39, id(rolladen_3), {0x6E, 0xE6, 0x89, 0x01, 0x5E, 0xF2, JUMP_XOR});
-            rollus.register_shutter(0xB9, id(rolladen_4), {0x6E, 0xE6, 0x89, 0x30, 0x6F, 0xC3, JUMP_XOR});
+            // Registrierung der Rolläden mit individuellen Masken:
+            // Parameter: ID, Cover, {b5, b7_offset}
+            // rollus.register_shutter(0x2D, id(rolladen_1), {0xD8, 0x15});
+            // rollus.register_shutter(0xAD, id(rolladen_2), {0xD8, 0x15});
+            rollus.register_shutter(0x39, id(rolladen_3), {0x6E, 0x51});
+            rollus.register_shutter(0xB9, id(rolladen_4), {0x6E, 0x51});
     - priority: -100
       then:
         - cc1101.begin_rx
