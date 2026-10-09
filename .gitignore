@@ -1,1 +1,7 @@
-rollus_dooya.yaml
+*
+
+!LICENSE
+!README.md
+!.gitignore
+!rollus_protocol.h
+!rollus.yaml

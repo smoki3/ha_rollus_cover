@@ -69,7 +69,7 @@ class RollusProtocol : public esphome::Component {
   void set_transmitter_fn(std::function<void(const std::vector<int32_t>&)> fn) {
     this->transmit_func = fn;
     if (!this->is_registered_) {
-      esphome::App.register_component(this);
+      esphome::App.register_component_(this);
       this->is_registered_ = true;
     }
   }
