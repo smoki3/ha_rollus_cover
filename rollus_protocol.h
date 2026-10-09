@@ -202,16 +202,17 @@ class RollusProtocol : public esphome::Component {
     return c;
   }
 
-  // Berechnet die b7-Tastenmasken (UP, STOP, DOWN) universell aus ID und b7_offset (ohne b5-Abhängigkeit)
-  void getB7Masks(uint8_t target_id, uint8_t b7_offset, uint8_t &b7_u, uint8_t &b7_s, uint8_t &b7_d) {
+  // Berechnet die b7-Tastenmasken (UP, STOP, DOWN, PROG) universell aus ID und b7_offset (feste Offsets zu STOP)
+  void getB7Masks(uint8_t target_id, uint8_t b7_offset, uint8_t &b7_u, uint8_t &b7_s, uint8_t &b7_d, uint8_t &b7_p) {
     uint8_t b4_p = 0;
     for (int i = 0; i < 8; i++) {
       if ((target_id >> i) & 1) b4_p ^= V_B4[i];
     }
 
     b7_s = b4_p ^ b7_offset;
-    b7_u = b7_s ^ 0x5F;
-    b7_d = b7_s ^ 0xAC;
+    b7_u = b7_s ^ 0x5F; // HOCH (0x81)
+    b7_d = b7_s ^ 0xAC; // RUNTER (0x21)
+    b7_p = b7_s ^ 0x3B; // PROG (0xA1)
   }
 
   void calculateFrame(uint8_t target_remote_id, uint8_t T, uint8_t cmdCode, uint8_t* rawFrame, uint8_t* decodedFrame) {
@@ -228,13 +229,13 @@ class RollusProtocol : public esphome::Component {
     uint8_t b3 = b2 ^ target_remote_id ^ m.getB3Parity(target_remote_id);
     uint8_t b5 = m.b5;
 
-    uint8_t b7_u = 0, b7_s = 0, b7_d = 0;
-    getB7Masks(target_remote_id, m.b7_offset, b7_u, b7_s, b7_d);
+    uint8_t b7_u = 0, b7_s = 0, b7_d = 0, b7_p = 0;
+    getB7Masks(target_remote_id, m.b7_offset, b7_u, b7_s, b7_d, b7_p);
 
     uint8_t base_mask = b7_s;
     if (cmdCode == 0x81) base_mask = b7_u;
     else if (cmdCode == 0x21) base_mask = b7_d;
-    else if (cmdCode == 0xA1) base_mask = b7_u ^ 0x64;
+    else if (cmdCode == 0xA1) base_mask = b7_p;
 
     uint8_t b7 = base_mask;
     for (int i = 0; i < 8; i++) {
